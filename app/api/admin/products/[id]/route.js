@@ -1,0 +1,77 @@
+import { NextResponse } from "next/server";
+import { connectDB } from "@/lib/mongodb";
+import { requireAdmin } from "@/lib/auth";
+import Medicine from "@/lib/models/Medicine";
+
+// UPDATE
+export async function PATCH(req, { params }) {
+    try {
+        const auth = requireAdmin(req);
+        if (auth.error) {
+            return NextResponse.json(
+                { success: false, error: auth.error },
+                { status: auth.status }
+            );
+        }
+
+        await connectDB();
+        const body = await req.json();
+        const { id } = await params;
+
+        const updated = await Medicine.findByIdAndUpdate(
+            id,
+            { ...body, updatedAt: new Date() },
+            { new: true }
+        );
+
+        if (!updated) {
+            return NextResponse.json(
+                { success: false, error: "Product পাওয়া যায়নি" },
+                { status: 404 }
+            );
+        }
+
+        return NextResponse.json({ success: true, product: updated });
+    } catch (err) {
+        return NextResponse.json(
+            { success: false, error: err.message },
+            { status: 500 }
+        );
+    }
+}
+
+// DELETE
+export async function DELETE(req, { params }) {
+    try {
+        const auth = requireAdmin(req);
+        if (auth.error) {
+            return NextResponse.json(
+                { success: false, error: auth.error },
+                { status: auth.status }
+            );
+        }
+
+        await connectDB();
+        const { id } = await params;
+
+        const deleted = await Medicine.findByIdAndUpdate(
+            id,
+            { deleted: true, updatedAt: new Date() },
+            { new: true }
+        );
+
+        if (!deleted) {
+            return NextResponse.json(
+                { success: false, error: "Product পাওয়া যায়নি" },
+                { status: 404 }
+            );
+        }
+
+        return NextResponse.json({ success: true, message: "Deleted" });
+    } catch (err) {
+        return NextResponse.json(
+            { success: false, error: err.message },
+            { status: 500 }
+        );
+    }
+}
