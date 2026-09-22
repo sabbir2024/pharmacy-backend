@@ -4,16 +4,71 @@ import { useEffect, useState } from "react";
 
 export default function AdminSync() {
     const [stats, setStats] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [clearing, setClearing] = useState(false);
 
-    useEffect(() => {
+    const load = () => {
         const token = localStorage.getItem("admin_token");
         fetch("/api/admin/stats", {
             headers: { Authorization: `Bearer ${token}` },
         })
             .then((r) => r.json())
             .then((d) => d.success && setStats(d))
-            .catch(console.error);
-    }, []);
+            .catch(console.error)
+            .finally(() => setLoading(false));
+    };
+
+    useEffect(load, []);
+
+    const clearMongoDB = async () => {
+        const confirmText = prompt(
+            "⚠️ MongoDB থেকে সব medicines, sales, customers মুছে যাবে।\n\n" +
+            "এটা ফেরানো যাবে না!\n\n" +
+            "নিশ্চিত করতে 'CLEAR' লিখুন:"
+        );
+
+        if (confirmText !== "CLEAR") {
+            alert("বাতিল করা হয়েছে");
+            return;
+        }
+
+        try {
+            setClearing(true);
+            const token = localStorage.getItem("admin_token");
+
+            const res = await fetch("/api/admin/clear-mongodb", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    tables: ["medicines", "sales", "customers"],
+                }),
+            });
+
+            const json = await res.json();
+            if (json.success) {
+                alert(
+                    `✅ MongoDB clear হয়েছে!\n\n` +
+                    `Medicines: ${json.deleted.medicines}\n` +
+                    `Sales: ${json.deleted.sales}\n` +
+                    `Customers: ${json.deleted.customers}`
+                );
+                load();
+            } else {
+                alert("❌ " + json.error);
+            }
+        } catch (err) {
+            alert("Error: " + err.message);
+        } finally {
+            setClearing(false);
+        }
+    };
+
+    if (loading) {
+        return <div className="p-8 text-gray-500">Loading...</div>;
+    }
 
     return (
         <div className="p-6 max-w-4xl mx-auto">
@@ -33,6 +88,25 @@ export default function AdminSync() {
                     <Stat label="Customers" value={stats?.customers?.total ?? "—"} />
                     <Stat label="Users" value={stats?.users?.total ?? "—"} />
                 </div>
+            </div>
+
+            {/* Danger Zone */}
+            <div className="mt-6 border border-red-200 rounded-xl p-5 bg-red-50">
+                <h2 className="text-lg font-bold text-red-700 mb-2">
+                    ⚠️ Danger Zone
+                </h2>
+                <p className="text-sm text-red-600 mb-4">
+                    MongoDB থেকে সব medicines, sales, customers মুছে ফেলুন।
+                    Users অটুট থাকবে।
+                </p>
+
+                <button
+                    onClick={clearMongoDB}
+                    disabled={clearing}
+                    className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50"
+                >
+                    {clearing ? "মুছে ফেলা হচ্ছে..." : "🗑️ Clear MongoDB Data"}
+                </button>
             </div>
         </div>
     );
