@@ -29,6 +29,10 @@ export async function POST(req) {
             deviceId = "unknown",
         } = body;
 
+        console.log(
+            `📤 Push from ${deviceId}: med=${medicines.length}, sales=${sales.length}, cust=${customers.length}`
+        );
+
         const serverTime = new Date();
 
         const results = {
@@ -37,40 +41,56 @@ export async function POST(req) {
             customers: { updated: 0, skipped: 0 },
         };
 
-        // Helper: Conflict Resolution
+        // ============================
+        // Helper: Upsert with conflict resolution
+        // ============================
         async function upsertRecord(Model, data, tableName) {
             if (!data.id) return;
 
+            // ⚠️ SQLite এ id integer, Mongo তে localId
+            const localId = Number(data.id);
+            const device = data.device_id || data.deviceId || "default";
+
             const existing = await Model.findOne({
-                localId: data.id,
-                deviceId: data.deviceId || "default",
+                localId,
+                deviceId: device,
             });
 
-            // Server newer → skip client
-            if (existing && existing.updatedAt && data.updatedAt) {
-                const clientTime = new Date(data.updatedAt).getTime();
-                const serverTimeExisting = new Date(existing.updatedAt).getTime();
+            // ✅ Client newer হলে update
+            const clientTime = data.updated_at || data.updatedAt;
+            const clientMs = clientTime ? new Date(clientTime).getTime() : 0;
 
-                if (serverTimeExisting > clientTime) {
+            if (existing && existing.updatedAt) {
+                const serverMs = new Date(existing.updatedAt).getTime();
+
+                // Server newer → skip
+                if (serverMs > clientMs) {
+                    console.log(
+                        `   ⏭️ Skipped ${tableName} ${localId}: server newer`
+                    );
                     results[tableName].skipped++;
                     return;
                 }
             }
 
-            // Prepare fields (SQLite snake_case → Mongo camelCase)
+            // Prepare base
             const prepared = {
-                localId: data.id,
-                deviceId: data.deviceId || "default",
-                updatedAt: data.updatedAt ? new Date(data.updatedAt) : serverTime,
+                localId,
+                deviceId: device,
+                updatedAt: clientTime ? new Date(clientTime) : serverTime,
                 deleted: data.deleted === 1 || data.deleted === true,
-                deletedAt: data.deletedAt ? new Date(data.deletedAt) : null,
-                lastModifiedBy: deviceId,
+                deletedAt: data.deleted_at
+                    ? new Date(data.deleted_at)
+                    : data.deletedAt
+                        ? new Date(data.deletedAt)
+                        : null,
+                lastModifiedBy: device,
             };
 
-            // Table-specific fields
+            // Table-specific
             if (tableName === "medicines") {
                 Object.assign(prepared, {
-                    name: data.name,
+                    name: data.name || "",
                     company: data.company || "",
                     price: Number(data.price) || 0,
                     stock: Number(data.stock) || 0,
@@ -89,14 +109,15 @@ export async function POST(req) {
                     change: Number(data.change) || 0,
                     dueAmount: Number(data.due_amount ?? data.dueAmount) || 0,
                     isDue: Number(data.is_due ?? data.isDue) || 0,
-                    paymentMethod: data.payment_method ?? data.paymentMethod ?? "cash",
+                    paymentMethod:
+                        data.payment_method || data.paymentMethod || "cash",
                     customerId: data.customer_id ?? data.customerId ?? null,
                     customerName: data.customerName ?? null,
                     items: data.items || [],
                 });
             } else if (tableName === "customers") {
                 Object.assign(prepared, {
-                    name: data.name,
+                    name: data.name || "",
                     phone: data.phone || "",
                     address: data.address || "",
                     totalDue: Number(data.total_due ?? data.totalDue) || 0,
@@ -104,10 +125,7 @@ export async function POST(req) {
             }
 
             await Model.findOneAndUpdate(
-                {
-                    localId: data.id,
-                    deviceId: data.deviceId || "default",
-                },
+                { localId, deviceId: device },
                 prepared,
                 { upsert: true, new: true }
             );
@@ -115,7 +133,7 @@ export async function POST(req) {
             results[tableName].updated++;
         }
 
-        // Process all records
+        // Process
         for (const m of medicines) {
             await upsertRecord(Medicine, m, "medicines");
         }
@@ -128,13 +146,20 @@ export async function POST(req) {
             await upsertRecord(Customer, c, "customers");
         }
 
+        console.log("✅ Push complete:", results);
+
         return NextResponse.json({
             success: true,
             serverTime: serverTime.toISOString(),
             results,
+            synced: {
+                medicines: results.medicines.updated,
+                sales: results.sales.updated,
+                customers: results.customers.updated,
+            },
         });
     } catch (err) {
-        console.error("Push error:", err);
+        console.error("❌ Push error:", err);
         return NextResponse.json(
             { success: false, error: err.message },
             { status: 500 }
