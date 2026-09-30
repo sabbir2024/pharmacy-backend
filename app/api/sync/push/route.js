@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { connectDB } from "@/lib/mongodb";
 import { requireActiveUser } from "@/lib/auth";
+import User from "@/lib/models/User";
 import Medicine from "@/lib/models/Medicine";
 import Sale from "@/lib/models/Sale";
 import Customer from "@/lib/models/Customer";
@@ -21,8 +22,10 @@ export async function POST(req) {
 
         await connectDB();
 
+        const userId = auth.user.id;
         const body = await req.json();
         const {
+            profiles = [],
             medicines = [],
             sales = [],
             customers = [],
@@ -30,51 +33,70 @@ export async function POST(req) {
         } = body;
 
         console.log(
-            `📤 Push from ${deviceId}: med=${medicines.length}, sales=${sales.length}, cust=${customers.length}`
+            `📤 Push from ${deviceId}: profile=${profiles.length}, med=${medicines.length}, sales=${sales.length}, cust=${customers.length}`
         );
 
         const serverTime = new Date();
 
         const results = {
+            profile: 0,
             medicines: { updated: 0, skipped: 0 },
             sales: { updated: 0, skipped: 0 },
             customers: { updated: 0, skipped: 0 },
         };
 
         // ============================
+        // ✅ Profile Update
+        // ============================
+        for (const p of profiles) {
+            if (!p.userId) continue;
+
+            // নিজের profile কিনা চেক
+            if (p.userId !== userId) continue;
+
+            const updateData = {};
+            if (p.name) updateData.name = p.name;
+            if (p.shopName) updateData.shopName = p.shopName;
+            if (p.address !== undefined) updateData.address = p.address;
+            if (p.phone !== undefined) updateData.phone = p.phone;
+            if (p.businessType) updateData.businessType = p.businessType;
+
+            if (Object.keys(updateData).length > 0) {
+                updateData.updatedAt = serverTime;
+                await User.findByIdAndUpdate(userId, updateData);
+                results.profile++;
+                console.log(`   ✅ Profile updated for ${p.email || userId}`);
+            }
+        }
+
+        // ============================
         // Helper: Upsert with conflict resolution
         // ============================
-        async function upsertRecord(Model, data, tableName) {
+        async function upsertRecord(Model, data, tableName, keyField = "localId") {
             if (!data.id) return;
 
-            // ⚠️ SQLite এ id integer, Mongo তে localId
             const localId = Number(data.id);
             const device = data.device_id || data.deviceId || "default";
 
             const existing = await Model.findOne({
-                localId,
+                userId,
+                [keyField]: localId,
                 deviceId: device,
             });
 
-            // ✅ Client newer হলে update
             const clientTime = data.updated_at || data.updatedAt;
             const clientMs = clientTime ? new Date(clientTime).getTime() : 0;
 
             if (existing && existing.updatedAt) {
                 const serverMs = new Date(existing.updatedAt).getTime();
-
-                // Server newer → skip
                 if (serverMs > clientMs) {
-                    console.log(
-                        `   ⏭️ Skipped ${tableName} ${localId}: server newer`
-                    );
                     results[tableName].skipped++;
                     return;
                 }
             }
 
-            // Prepare base
             const prepared = {
+                userId,
                 localId,
                 deviceId: device,
                 updatedAt: clientTime ? new Date(clientTime) : serverTime,
@@ -87,7 +109,6 @@ export async function POST(req) {
                 lastModifiedBy: device,
             };
 
-            // Table-specific
             if (tableName === "medicines") {
                 Object.assign(prepared, {
                     name: data.name || "",
@@ -121,11 +142,19 @@ export async function POST(req) {
                     phone: data.phone || "",
                     address: data.address || "",
                     totalDue: Number(data.total_due ?? data.totalDue) || 0,
+                    openingBalance:
+                        Number(data.opening_balance ?? data.openingBalance) || 0,
+                    openingNote: data.opening_note ?? data.openingNote ?? "",
+                    openingDate: data.opening_date
+                        ? new Date(data.opening_date)
+                        : data.openingDate
+                            ? new Date(data.openingDate)
+                            : null,
                 });
             }
 
             await Model.findOneAndUpdate(
-                { localId, deviceId: device },
+                { userId, [keyField]: localId, deviceId: device },
                 prepared,
                 { upsert: true, new: true }
             );
@@ -137,11 +166,9 @@ export async function POST(req) {
         for (const m of medicines) {
             await upsertRecord(Medicine, m, "medicines");
         }
-
         for (const s of sales) {
             await upsertRecord(Sale, s, "sales");
         }
-
         for (const c of customers) {
             await upsertRecord(Customer, c, "customers");
         }
@@ -153,6 +180,7 @@ export async function POST(req) {
             serverTime: serverTime.toISOString(),
             results,
             synced: {
+                profile: results.profile,
                 medicines: results.medicines.updated,
                 sales: results.sales.updated,
                 customers: results.customers.updated,
